@@ -174,6 +174,11 @@ app.get('/', (req, res) => {
                 <p class="stat-detail">Bot's current in-game position</p>
               </div>
               <div class="stat-card">
+                <dt>Protecting</dt>
+                <dd id="protect-text">Nobody</dd>
+                <p class="stat-detail">Player currently being guarded</p>
+              </div>
+              <div class="stat-card">
                 <dt>Server address</dt>
                 <dd>${config.server.ip}</dd>
                 <p class="stat-detail">Minecraft server hostname</p>
@@ -236,6 +241,8 @@ app.get('/', (req, res) => {
               } else {
                 document.getElementById('coords-text').textContent = 'Searching…';
               }
+
+              document.getElementById('protect-text').textContent = data.protectedPlayer || 'Nobody';
             } catch (e) {
               const label = document.getElementById('status-label');
               label.className = 'status-label offline';
@@ -264,6 +271,7 @@ app.get('/', (req, res) => {
     </html>
   `);
 });
+
 app.get("/tutorial", (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -444,10 +452,10 @@ app.get("/tutorial", (req, res) => {
           <div class="step-card">
             <div class="step-header">
               <div class="step-number">3</div>
-              <h2 class="step-title">Deploy on Replit (Free 24/7)</h2>
+              <h2 class="step-title">Deploy on Render (Free 24/7)</h2>
             </div>
             <ol>
-              <li>Import your GitHub repo into <strong>Replit</strong>.</li>
+              <li>Import your GitHub repo into <strong>Render</strong>.</li>
               <li>Set the run command to <code>npm start</code>.</li>
               <li>Hit <strong>Run</strong> — the bot connects automatically.</li>
               <li>The bot pings itself every 10 minutes to stay alive.</li>
@@ -471,6 +479,7 @@ app.get("/health", (req, res) => {
     lastActivity: botState.lastActivity,
     reconnectAttempts: botState.reconnectAttempts,
     memoryUsage: process.memoryUsage().heapUsed / 1024 / 1024,
+    protectedPlayer: protectedPlayer || null,
   });
 });
 
@@ -612,6 +621,7 @@ app.get("/logs", (req, res) => {
           .log-entry.warn    { color: #e3b341; }
           .log-entry.success { color: #3fb950; }
           .log-entry.control { color: #58a6ff; }
+          .log-entry.protect { color: #d2a8ff; }
           .log-entry.default { color: #8b949e; }
 
           .empty-state {
@@ -768,6 +778,7 @@ app.get("/logs", (req, res) => {
                     if (lower.includes("error") || lower.includes("fail")) cls = "error";
                     else if (lower.includes("warn")) cls = "warn";
                     else if (lower.includes("[control]")) cls = "control";
+                    else if (lower.includes("[protect]")) cls = "protect";
                     else if (lower.includes("connect") || lower.includes("join") || lower.includes("spawn")) cls = "success";
                     return `<span class="log-entry ${cls}">${escaped}</span>`;
                   }).join("")
@@ -812,11 +823,13 @@ app.get("/logs", (req, res) => {
             var activeIdx = -1;
 
             var COMMANDS = [
-              { name: '/help',   desc: 'Show all available commands' },
-              { name: '/pos',    desc: "Show bot's current coordinates" },
-              { name: '/status', desc: 'Show connection status & uptime' },
-              { name: '/list',   desc: 'List players on the server' },
-              { name: '/say',    desc: 'Send a chat message in-game' },
+              { name: '/help',         desc: 'Show all available commands' },
+              { name: '/pos',          desc: "Show bot's current coordinates" },
+              { name: '/status',       desc: 'Show connection status & uptime' },
+              { name: '/list',         desc: 'List players on the server' },
+              { name: '/say',          desc: 'Send a chat message in-game' },
+              { name: '/protect',      desc: 'Protect a player from hostile mobs' },
+              { name: '/protect stop', desc: 'Stop protection mode' },
             ];
 
             function scrollBottom() {
@@ -1010,13 +1023,15 @@ app.post("/command", express.json(), (req, res) => {
   if (cmd === "/help") {
     const lines = [
       "Available commands:",
-      "  /help          - Show this help message",
-      "  /pos           - Show bot's current coordinates",
-      "  /status        - Show bot connection status",
-      "  /list          - Ask server for player list",
-      "  /say <message> - Send a chat message in-game",
-      "  /<anything>    - Send any Minecraft command directly",
-      "  <text>         - Send plain chat (no slash needed)",
+      "  /help               - Show this help message",
+      "  /pos                - Show bot's current coordinates",
+      "  /status             - Show bot connection status",
+      "  /list               - Ask server for player list",
+      "  /say <message>      - Send a chat message in-game",
+      "  /protect <username> - Protect a player from hostile mobs",
+      "  /protect stop       - Disable protection mode",
+      "  /<anything>         - Send any Minecraft command directly",
+      "  <text>              - Send plain chat (no slash needed)",
     ];
     lines.forEach((l) => addLog(`[Console] ${l}`));
     return res.json({ success: true, msg: lines.join("\n") });
@@ -1034,9 +1049,27 @@ app.post("/command", express.json(), (req, res) => {
   if (cmd === "/status") {
     const status = botState.connected ? "Connected" : "Disconnected";
     const uptime = Math.floor((Date.now() - botState.startTime) / 1000);
-    const msg = `Status: ${status} | Uptime: ${uptime}s | Reconnects: ${botState.reconnectAttempts}`;
+    const msg = `Status: ${status} | Uptime: ${uptime}s | Reconnects: ${botState.reconnectAttempts} | Protecting: ${protectedPlayer || "nobody"}`;
     addLog(`[Console] ${msg}`);
     return res.json({ success: true, msg });
+  }
+
+  // Protect command
+  if (cmd.startsWith("/protect")) {
+    const arg = cmd.slice(8).trim();
+    if (!arg || arg === "") {
+      const msg = protectedPlayer
+        ? `Currently protecting: ${protectedPlayer}. Use /protect stop to disable.`
+        : "Usage: /protect <username>  |  /protect stop";
+      addLog(`[Protect] ${msg}`);
+      return res.json({ success: true, msg });
+    }
+    if (arg === "stop" || arg === "off") {
+      stopProtection();
+      return res.json({ success: true, msg: "Protection disabled." });
+    }
+    startProtection(arg);
+    return res.json({ success: true, msg: `Protect command sent for "${arg}". Watch bot chat for response.` });
   }
 
   if (!bot || typeof bot.chat !== "function") {
@@ -1059,9 +1092,8 @@ app.post("/command", express.json(), (req, res) => {
 
 // ============================================================
 //                    END OF WEB TOOLS
-//============================================================
+// ============================================================
 
-// FIX: handle port conflict gracefully - try next port if taken
 const server = app.listen(PORT, "0.0.0.0", () => {
   addLog(`[Server] HTTP server started on port ${server.address().port} `);
 });
@@ -1075,17 +1107,15 @@ server.on("error", (err) => {
   }
 });
 
-// FIX: only one definition of formatUptime
 function formatUptime(seconds) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = seconds % 60;
-  return `${h}h ${m}m ${s} s`;
+  return `${h}h ${m}m ${s}s`;
 }
 
 // ============================================================
 // SELF-PING - Prevent Render from sleeping
-// FIX: only ping if RENDER_EXTERNAL_URL is set (skip useless localhost ping)
 // ============================================================
 const SELF_PING_INTERVAL = 10 * 60 * 1000;
 
@@ -1125,16 +1155,17 @@ setInterval(
 );
 
 // ============================================================
-// BOT CREATION WITH RECONNECTION LOGIC
-// ============================================================
-// ============================================================
-// RECONNECTION & TIMEOUT MANAGEMENT
+// BOT & RECONNECTION STATE
 // ============================================================
 let bot = null;
 let activeIntervals = [];
 let reconnectTimeoutId = null;
 let connectionTimeoutId = null;
 let isReconnecting = false;
+
+// Protect module state
+let protectedPlayer = null;
+let lastProtectAttack = 0;
 
 function clearBotTimeouts() {
   if (reconnectTimeoutId) {
@@ -1147,9 +1178,8 @@ function clearBotTimeouts() {
   }
 }
 
-// FIX: Discord rate limiting - track last send time
 let lastDiscordSend = 0;
-const DISCORD_RATE_LIMIT_MS = 5000; // min 5s between webhook calls
+const DISCORD_RATE_LIMIT_MS = 5000;
 
 function clearAllIntervals() {
   addLog(`[Cleanup] Clearing ${activeIntervals.length} intervals`);
@@ -1173,7 +1203,6 @@ function getReconnectDelay() {
     return throttleDelay;
   }
 
-  // FIX: read auto-reconnect-delay from settings as base delay
   const baseDelay = config.utils["auto-reconnect-delay"] || 3000;
   const maxDelay = config.utils["max-reconnect-delay"] || 30000;
   const delay = Math.min(
@@ -1184,13 +1213,45 @@ function getReconnectDelay() {
   return delay + jitter;
 }
 
+// ============================================================
+// PROTECT MODULE FUNCTIONS
+// ============================================================
+function startProtection(username) {
+  if (!bot || !botState.connected) {
+    addLog("[Protect] Bot not connected - can't start protection");
+    return;
+  }
+
+  const player = bot.players[username];
+  if (!player || !player.entity) {
+    bot.chat(`who's that?`);
+    addLog(`[Protect] Player "${username}" not found on server`);
+    return;
+  }
+
+  protectedPlayer = username;
+  bot.chat(`SIR YES SIR!`);
+  addLog(`[Protect] Now protecting ${username}`);
+}
+
+function stopProtection() {
+  const prev = protectedPlayer;
+  protectedPlayer = null;
+  if (bot && botState.connected) {
+    try { bot.pathfinder.stop(); } catch (e) {}
+  }
+  addLog(`[Protect] Protection of "${prev || "nobody"}" disabled`);
+}
+
+// ============================================================
+// BOT CREATION WITH RECONNECTION LOGIC
+// ============================================================
 function createBot() {
   if (isReconnecting) {
     addLog("[Bot] Already reconnecting, skipping...");
     return;
   }
 
-  // Cleanup previous bot properly to avoid ghost bots
   if (bot) {
     clearAllIntervals();
     try {
@@ -1206,12 +1267,11 @@ function createBot() {
   addLog(`[Bot] Connecting to ${config.server.ip}:${config.server.port}`);
 
   try {
-    // FIX: use version:false to auto-detect server version so the bot can join any server.
-    // If the user explicitly sets a version in settings.json it is still respected.
     const botVersion =
       config.server.version && config.server.version.trim() !== ""
         ? config.server.version
         : false;
+
     bot = mineflayer.createBot({
       username: config["bot-account"].username,
       password: config["bot-account"].password || undefined,
@@ -1225,7 +1285,6 @@ function createBot() {
 
     bot.loadPlugin(pathfinder);
 
-    // FIX: connection timeout - end the old bot before reconnecting to avoid ghost bots
     clearBotTimeouts();
     connectionTimeoutId = setTimeout(() => {
       if (!botState.connected) {
@@ -1233,15 +1292,12 @@ function createBot() {
         try {
           bot.removeAllListeners();
           bot.end();
-        } catch (e) {
-          /* ignore */
-        }
+        } catch (e) { /* ignore */ }
         bot = null;
         scheduleReconnect();
       }
-    }, 150000); // 150s - Aternos servers can take 90-120s to finish spawning a player
+    }, 150000);
 
-    // FIX: guard against spawn firing twice (can happen on some servers)
     let spawnHandled = false;
 
     bot.once("spawn", () => {
@@ -1268,7 +1324,6 @@ function createBot() {
         );
       }
 
-      // FIX: use bot.version (auto-detected) instead of config value so minecraft-data always matches
       const mcData = require("minecraft-data")(bot.version);
       const defaultMove = new Movements(bot, mcData);
       defaultMove.allowFreeMotion = false;
@@ -1278,7 +1333,6 @@ function createBot() {
 
       initializeModules(bot, mcData, defaultMove);
 
-      // Attempt creative mode (only works if bot has OP and enabled in settings)
       setTimeout(() => {
         if (bot && botState.connected && config.server["try-creative"]) {
           bot.chat("/gamemode creative");
@@ -1296,10 +1350,7 @@ function createBot() {
       });
     });
 
-    // FIX: 'kicked' fires before 'end'. Remove the scheduleReconnect from 'kicked'
-    // so that 'end' is the single source of reconnect truth, preventing double-trigger.
     bot.on("kicked", (reason) => {
-      // FIX: stringify reason if it's an object to make it readable in logs
       const kickReason =
         typeof reason === "object" ? JSON.stringify(reason) : reason;
       addLog(`[Bot] Kicked: ${kickReason}`);
@@ -1330,15 +1381,13 @@ function createBot() {
       ) {
         sendDiscordWebhook(`[!] **Kicked**: ${kickReason}`, 0xff0000);
       }
-      // NOTE: do NOT call scheduleReconnect() here - 'end' will fire right after 'kicked' and handle it
     });
 
-    // FIX: 'end' is the single reconnect trigger
     bot.on("end", (reason) => {
       addLog(`[Bot] Disconnected: ${reason || "Unknown reason"}`);
       botState.connected = false;
       clearAllIntervals();
-      spawnHandled = false; // reset for next connection
+      spawnHandled = false;
 
       if (
         config.discord &&
@@ -1351,7 +1400,6 @@ function createBot() {
         );
       }
 
-      // ALWAYS reconnect — bot must never leave the server
       scheduleReconnect();
     });
 
@@ -1359,7 +1407,6 @@ function createBot() {
       const msg = err.message || "";
       addLog(`[Bot] Error: ${msg}`);
       botState.errors.push({ type: "error", message: msg, time: Date.now() });
-      // Don't reconnect on error - let 'end' event handle it
     });
   } catch (err) {
     addLog(`[Bot] Failed to create bot: ${err.message}`);
@@ -1370,7 +1417,6 @@ function createBot() {
 function scheduleReconnect() {
   clearBotTimeouts();
 
-  // FIX: don't stack reconnect if already waiting
   if (isReconnecting) {
     addLog("[Bot] Reconnect already scheduled, skipping duplicate.");
     return;
@@ -1432,7 +1478,6 @@ function initializeModules(bot, mcData, defaultMove) {
       }
     });
 
-    // Failsafe: if no prompt after 10s, try login anyway
     setTimeout(() => {
       if (!authHandled && bot && botState.connected) {
         addLog(
@@ -1466,7 +1511,6 @@ function initializeModules(bot, mcData, defaultMove) {
   }
 
   // ---------- MOVE TO POSITION ----------
-  // FIX: only use position goal if circle-walk is NOT enabled (they fight over pathfinder)
   if (
     config.position &&
     config.position.enabled &&
@@ -1485,7 +1529,6 @@ function initializeModules(bot, mcData, defaultMove) {
 
   // ---------- ANTI-AFK ----------
   if (config.utils["anti-afk"] && config.utils["anti-afk"].enabled) {
-    // Arm swinging
     addInterval(
       () => {
         if (!bot || !botState.connected) return;
@@ -1496,7 +1539,6 @@ function initializeModules(bot, mcData, defaultMove) {
       10000 + Math.floor(Math.random() * 50000),
     );
 
-    // Hotbar cycling
     addInterval(
       () => {
         if (!bot || !botState.connected) return;
@@ -1508,7 +1550,6 @@ function initializeModules(bot, mcData, defaultMove) {
       30000 + Math.floor(Math.random() * 90000),
     );
 
-    // Teabagging
     addInterval(
       () => {
         if (
@@ -1538,7 +1579,6 @@ function initializeModules(bot, mcData, defaultMove) {
       120000 + Math.floor(Math.random() * 180000),
     );
 
-    // FIX: micro-walk only when circle-walk is NOT running, to avoid interrupting pathfinder
     if (
       !(
         config.movement &&
@@ -1551,7 +1591,8 @@ function initializeModules(bot, mcData, defaultMove) {
           if (
             !bot ||
             !botState.connected ||
-            typeof bot.setControlState !== "function"
+            typeof bot.setControlState !== "function" ||
+            protectedPlayer  // don't micro-walk while protecting
           )
             return;
           try {
@@ -1583,17 +1624,13 @@ function initializeModules(bot, mcData, defaultMove) {
   }
 
   // ---------- MOVEMENT MODULES ----------
-  // FIX: check top-level movement.enabled flag
   if (config.movement && config.movement.enabled !== false) {
-    // FIX: circle-walk and random-jump both jump - only run one jumping mechanism
-    // random-jump is skipped if anti-afk jump is handled elsewhere; we only use random-jump here
     if (
       config.movement["circle-walk"] &&
       config.movement["circle-walk"].enabled
     ) {
       startCircleWalk(bot, defaultMove);
     }
-    // FIX: only run random-jump if circle-walk is NOT running (circle-walk also keeps bot moving)
     if (
       config.movement["random-jump"] &&
       config.movement["random-jump"].enabled &&
@@ -1612,7 +1649,6 @@ function initializeModules(bot, mcData, defaultMove) {
   }
 
   // ---------- CUSTOM MODULES ----------
-  // FIX: avoidMobs AND combatModule conflict - if combat is enabled, don't run avoidMobs at the same time
   if (config.modules.avoidMobs && !config.modules.combat) {
     avoidMobs(bot);
   }
@@ -1626,6 +1662,79 @@ function initializeModules(bot, mcData, defaultMove) {
     chatModule(bot);
   }
 
+  // ---------- PROTECT MODULE ----------
+  addInterval(() => {
+    if (!bot || !botState.connected || !protectedPlayer) return;
+
+    const player = bot.players[protectedPlayer];
+    if (!player || !player.entity) return;
+
+    const targetEntity = player.entity;
+
+    // Follow the protected player (stay within 2 blocks)
+    try {
+      const distToPlayer = bot.entity.position.distanceTo(targetEntity.position);
+      if (distToPlayer > 3) {
+        bot.pathfinder.setMovements(defaultMove);
+        if (goals.GoalFollow) {
+          bot.pathfinder.setGoal(new goals.GoalFollow(targetEntity, 2), true);
+        } else {
+          const pos = targetEntity.position;
+          bot.pathfinder.setGoal(
+            new GoalBlock(
+              Math.floor(pos.x),
+              Math.floor(pos.y),
+              Math.floor(pos.z)
+            )
+          );
+        }
+      }
+    } catch (e) {
+      addLog("[Protect] Follow error: " + e.message);
+    }
+
+    // Attack hostile mobs threatening the protected player
+    const now = Date.now();
+    if (now - lastProtectAttack < 620) return; // respect 1.9+ attack cooldown
+
+    try {
+      const threats = Object.values(bot.entities).filter((e) => {
+        if (!e.position || e.type !== "mob") return false;
+        return e.position.distanceTo(targetEntity.position) < 6;
+      });
+
+      if (threats.length === 0) return;
+
+      // Pick the threat closest to the bot so we can reach it to swing
+      const closestThreat = threats.reduce((best, e) =>
+        bot.entity.position.distanceTo(e.position) <
+        bot.entity.position.distanceTo(best.position)
+          ? e
+          : best
+      );
+
+      const distToThreat = bot.entity.position.distanceTo(closestThreat.position);
+
+      if (distToThreat < 4) {
+        bot.attack(closestThreat);
+        lastProtectAttack = now;
+        addLog(`[Protect] Attacking threat near ${protectedPlayer}`);
+      } else {
+        // Rush toward the threat first
+        bot.pathfinder.setMovements(defaultMove);
+        bot.pathfinder.setGoal(
+          new GoalBlock(
+            Math.floor(closestThreat.position.x),
+            Math.floor(closestThreat.position.y),
+            Math.floor(closestThreat.position.z)
+          )
+        );
+      }
+    } catch (e) {
+      addLog("[Protect] Combat error: " + e.message);
+    }
+  }, 500);
+
   addLog("[Modules] All modules initialized!");
 }
 
@@ -1638,7 +1747,7 @@ function startCircleWalk(bot, defaultMove) {
   let lastPathTime = 0;
 
   addInterval(() => {
-    if (!bot || !botState.connected) return;
+    if (!bot || !botState.connected || protectedPlayer) return; // pause circle-walk while protecting
     const now = Date.now();
     if (now - lastPathTime < 2000) return;
     lastPathTime = now;
@@ -1700,8 +1809,6 @@ function startLookAround(bot) {
 // CUSTOM MODULES
 // ============================================================
 
-// Avoid mobs/players
-// FIX: e.username only exists on players; use e.name for mobs - now handled properly
 function avoidMobs(bot) {
   const safeDistance = 5;
   addInterval(() => {
@@ -1735,26 +1842,19 @@ function avoidMobs(bot) {
   }, 2000);
 }
 
-// Combat module
-// FIX: attack cooldown for 1.9+ (600ms minimum between attacks)
-// FIX: lock onto a target for multiple ticks instead of randomly switching every tick
-// FIX: autoEat - use i.foodPoints directly (mineflayer item property) instead of broken mcData lookup
 function combatModule(bot, mcData) {
   let lastAttackTime = 0;
   let lockedTarget = null;
   let lockedTargetExpiry = 0;
 
-  // FIX: use physicsTick (not the deprecated physicTick)
   bot.on("physicsTick", () => {
     if (!bot || !botState.connected) return;
     if (!config.combat["attack-mobs"]) return;
 
     const now = Date.now();
-    // FIX: 1.9+ attack cooldown - respect at least 600ms between swings
     if (now - lastAttackTime < 620) return;
 
     try {
-      // FIX: only pick a new target if current one is gone or lock expired
       if (
         lockedTarget &&
         now < lockedTargetExpiry &&
@@ -1771,7 +1871,6 @@ function combatModule(bot, mcData) {
         }
       }
 
-      // Pick a new target
       const mobs = Object.values(bot.entities).filter(
         (e) =>
           e.type === "mob" &&
@@ -1780,7 +1879,7 @@ function combatModule(bot, mcData) {
       );
       if (mobs.length > 0) {
         lockedTarget = mobs[0];
-        lockedTargetExpiry = now + 3000; // stick to same mob for 3 seconds
+        lockedTargetExpiry = now + 3000;
         bot.attack(lockedTarget);
         lastAttackTime = now;
       }
@@ -1789,7 +1888,6 @@ function combatModule(bot, mcData) {
     }
   });
 
-  // FIX: autoEat - check foodPoints property on the item directly (works reliably)
   bot.on("health", () => {
     if (!config.combat["auto-eat"]) return;
     try {
@@ -1810,21 +1908,17 @@ function combatModule(bot, mcData) {
   });
 }
 
-// Bed module
-// FIX: bot.isSleeping can be stale; use a local isTryingToSleep guard to prevent double-sleep errors
-// FIX: place-night was false in default settings - documentation note added
 function bedModule(bot, mcData) {
   let isTryingToSleep = false;
 
   addInterval(async () => {
     if (!bot || !botState.connected) return;
-    if (!config.beds["place-night"]) return; // FIX: check flag (was always skipping before)
+    if (!config.beds["place-night"]) return;
 
     try {
       const isNight =
         bot.time.timeOfDay >= 12500 && bot.time.timeOfDay <= 23500;
 
-      // FIX: use local guard instead of stale bot.isSleeping
       if (isNight && !isTryingToSleep) {
         const bedBlock = bot.findBlock({
           matching: (block) => block.name.includes("bed"),
@@ -1850,14 +1944,11 @@ function bedModule(bot, mcData) {
   }, 10000);
 }
 
-// Chat module
-// FIX: wire up discord.events.chat flag
 function chatModule(bot) {
   bot.on("chat", (username, message) => {
     if (!bot || username === bot.username) return;
 
     try {
-      // FIX: send chat events to Discord if enabled
       if (
         config.discord &&
         config.discord.enabled &&
@@ -1894,19 +1985,40 @@ const rl = readline.createInterface({
 });
 
 rl.on("line", (line) => {
+  const trimmed = line.trim();
+
+  // Protect command — doesn't require bot to be connected to parse
+  if (trimmed.startsWith("protect ")) {
+    const target = trimmed.slice(8).trim();
+    if (target === "stop" || target === "off") {
+      stopProtection();
+    } else {
+      startProtection(target);
+    }
+    return;
+  }
+
+  if (trimmed === "protect") {
+    addLog(
+      protectedPlayer
+        ? `[Protect] Currently protecting: ${protectedPlayer}. Type "protect stop" to disable.`
+        : '[Protect] Usage: protect <username>  |  protect stop'
+    );
+    return;
+  }
+
   if (!bot || !botState.connected) {
     addLog("[Console] Bot not connected");
     return;
   }
 
-  const trimmed = line.trim();
   if (trimmed.startsWith("say ")) {
     bot.chat(trimmed.slice(4));
   } else if (trimmed.startsWith("cmd ")) {
     bot.chat("/" + trimmed.slice(4));
   } else if (trimmed === "status") {
     addLog(
-      `Connected: ${botState.connected}, Uptime: ${formatUptime(Math.floor((Date.now() - botState.startTime) / 1000))}`,
+      `Connected: ${botState.connected}, Uptime: ${formatUptime(Math.floor((Date.now() - botState.startTime) / 1000))}, Protecting: ${protectedPlayer || "nobody"}`,
     );
   } else {
     bot.chat(trimmed);
@@ -1915,8 +2027,6 @@ rl.on("line", (line) => {
 
 // ============================================================
 // DISCORD WEBHOOK INTEGRATION
-// FIX: use Buffer.byteLength for Content-Length (handles non-ASCII usernames correctly)
-// FIX: rate limiting to avoid spam when bot is flapping
 // ============================================================
 function sendDiscordWebhook(content, color = 0x0099ff) {
   if (
@@ -1927,7 +2037,6 @@ function sendDiscordWebhook(content, color = 0x0099ff) {
   )
     return;
 
-  // FIX: Discord rate limiting - skip if sent too recently
   const now = Date.now();
   if (now - lastDiscordSend < DISCORD_RATE_LIMIT_MS) {
     addLog("[Discord] Rate limited - skipping webhook");
@@ -1957,7 +2066,6 @@ function sendDiscordWebhook(content, color = 0x0099ff) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      // FIX: use Buffer.byteLength instead of payload.length - handles non-ASCII (e.g. usernames with accents/emoji)
       "Content-Length": Buffer.byteLength(payload, "utf8"),
     },
   };
@@ -1976,14 +2084,12 @@ function sendDiscordWebhook(content, color = 0x0099ff) {
 
 // ============================================================
 // CRASH RECOVERY - IMMORTAL MODE
-// FIX: guard against uncaughtException stacking reconnects when isReconnecting is already true
 // ============================================================
 process.on("uncaughtException", (err) => {
   const msg = err.message || "Unknown";
   addLog(`[FATAL] Uncaught Exception: ${msg}`);
   botState.errors.push({ type: "uncaught", message: msg, time: Date.now() });
 
-  // Cap errors array to prevent memory leak over long uptimes
   if (botState.errors.length > 100) {
     botState.errors = botState.errors.slice(-50);
   }
@@ -2001,17 +2107,14 @@ process.on("uncaughtException", (err) => {
     addLog("[FATAL] Known network/protocol error - recovering gracefully...");
   }
 
-  // ALWAYS recover — bot must never stay disconnected
   clearAllIntervals();
   botState.connected = false;
 
-  // FIX: reset isReconnecting if it was stuck, then schedule reconnect
   if (isReconnecting) {
     addLog(
       "[FATAL] isReconnecting was stuck - resetting before crash recovery",
     );
     isReconnecting = false;
-    // BUG FIX: was referencing non-existent 'reconnectTimeout' — correct name is 'reconnectTimeoutId'
     if (reconnectTimeoutId) {
       clearTimeout(reconnectTimeoutId);
       reconnectTimeoutId = null;
@@ -2062,8 +2165,7 @@ process.on("SIGINT", () => {
   addLog("[System] SIGINT received — ignoring, bot will stay alive.");
 });
 
-// =============================
-//===============================
+// ============================================================
 // START THE BOT
 // ============================================================
 addLog("=".repeat(50));
